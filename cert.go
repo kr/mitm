@@ -1,9 +1,8 @@
 package mitm
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
@@ -45,7 +44,7 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 		KeyUsage:              leafUsage,
 		BasicConstraintsValid: true,
 		DNSNames:              names,
-		SignatureAlgorithm:    x509.ECDSAWithSHA512,
+		SignatureAlgorithm:    x509.SHA512WithRSA,
 	}
 	key, err := genKeyPair()
 	if err != nil {
@@ -62,8 +61,8 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 	return cert, nil
 }
 
-func genKeyPair() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+func genKeyPair() (*rsa.PrivateKey /**ecdsa.PrivateKey*/, error) {
+	return rsa.GenerateKey(rand.Reader, 2048)
 }
 
 func GenCA(name string) (certPEM, keyPEM []byte, err error) {
@@ -77,7 +76,7 @@ func GenCA(name string) (certPEM, keyPEM []byte, err error) {
 		BasicConstraintsValid: true,
 		IsCA:               true,
 		MaxPathLen:         2,
-		SignatureAlgorithm: x509.ECDSAWithSHA512,
+		SignatureAlgorithm: x509.SHA512WithRSA,
 	}
 	key, err := genKeyPair()
 	if err != nil {
@@ -87,10 +86,8 @@ func GenCA(name string) (certPEM, keyPEM []byte, err error) {
 	if err != nil {
 		return
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return
-	}
+	keyDER := x509.MarshalPKCS1PrivateKey(key)
+
 	certPEM = pem.EncodeToMemory(&pem.Block{
 		Type:  "CERTIFICATE",
 		Bytes: certDER,
