@@ -63,7 +63,7 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 }
 
 func genKeyPair() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }
 
 func GenCA(name string) (certPEM, keyPEM []byte, err error) {
@@ -75,9 +75,9 @@ func GenCA(name string) (certPEM, keyPEM []byte, err error) {
 		NotAfter:              now.Add(caMaxAge),
 		KeyUsage:              caUsage,
 		BasicConstraintsValid: true,
-		IsCA:               true,
-		MaxPathLen:         2,
-		SignatureAlgorithm: x509.ECDSAWithSHA512,
+		IsCA:                  true,
+		MaxPathLen:            2,
+		SignatureAlgorithm:    x509.ECDSAWithSHA512,
 	}
 	key, err := genKeyPair()
 	if err != nil {
