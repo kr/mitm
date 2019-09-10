@@ -146,7 +146,3 @@ func GenerateCert(ca *tls.Certificate, hosts ...string) (*tls.Certificate, error
 	cert.Leaf, _ = x509.ParseCertificate(x)
 	return cert, nil
 }
-
-func genKeyPair() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-}
