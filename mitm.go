@@ -260,10 +260,47 @@ func dnsName(addr string) string {
 	return host
 }
 
+// Certificates are cached locally to avoid unnecessary regeneration
+const certCacheMaxSize = 1000
+
+var (
+	certCache      = make(map[*tls.Certificate]map[string]*tls.Certificate)
+	certCacheMutex sync.RWMutex
+)
+
 func getCert(ca *tls.Certificate, host string) (*tls.Certificate, error) {
+	if c := getCachedCert(ca, host); c != nil {
+		return c, nil
+	}
 	cert, err := GenerateCert(ca, host)
 	if err != nil {
 		return nil, err
 	}
+	cacheCert(ca, host, cert)
 	return cert, nil
+}
+
+func getCachedCert(ca *tls.Certificate, host string) *tls.Certificate {
+	certCacheMutex.RLock()
+	defer certCacheMutex.RUnlock()
+
+	if certCache[ca] == nil {
+		return nil
+	}
+	cert := certCache[ca][host]
+	if cert == nil || cert.Leaf.NotAfter.Before(time.Now()) {
+		return nil
+	} else {
+		return cert
+	}
+}
+
+func cacheCert(ca *tls.Certificate, host string, cert *tls.Certificate) {
+	certCacheMutex.Lock()
+	defer certCacheMutex.Unlock()
+
+	if certCache[ca] == nil || len(certCache[ca]) > certCacheMaxSize {
+		certCache[ca] = make(map[string]*tls.Certificate)
+	}
+	certCache[ca][host] = cert
 }
