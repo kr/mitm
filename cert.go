@@ -1,30 +1,24 @@
 package mitm
 
 import (
-	"crypto/ecdsa"
-	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha1"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"time"
 )
 
 const (
-	caMaxAge   = 5 * 365 * 24 * time.Hour
+	caMaxAge   = 2 * 365 * 24 * time.Hour
 	leafMaxAge = 24 * time.Hour
-	caUsage    = x509.KeyUsageDigitalSignature |
-		x509.KeyUsageContentCommitment |
-		x509.KeyUsageKeyEncipherment |
-		x509.KeyUsageDataEncipherment |
-		x509.KeyUsageKeyAgreement |
-		x509.KeyUsageCertSign |
-		x509.KeyUsageCRLSign
-	leafUsage = caUsage
 )
 
 func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
@@ -42,10 +36,9 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 		Subject:               pkix.Name{CommonName: names[0]},
 		NotBefore:             now,
 		NotAfter:              now.Add(leafMaxAge),
-		KeyUsage:              leafUsage,
 		BasicConstraintsValid: true,
 		DNSNames:              names,
-		SignatureAlgorithm:    x509.ECDSAWithSHA512,
+		SignatureAlgorithm:    x509.SHA512WithRSA,
 	}
 	key, err := genKeyPair()
 	if err != nil {
@@ -62,32 +55,30 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 	return cert, nil
 }
 
-func genKeyPair() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+func genKeyPair() (*rsa.PrivateKey, error) {
+	return rsa.GenerateKey(rand.Reader, 2048)
 }
 
 func GenCA(name string) (certPEM, keyPEM []byte, err error) {
-	now := time.Now().UTC()
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: name},
-		NotBefore:             now,
-		NotAfter:              now.Add(caMaxAge),
-		KeyUsage:              caUsage,
-		BasicConstraintsValid: true,
-		IsCA:                  true,
-		MaxPathLen:            2,
-		SignatureAlgorithm:    x509.ECDSAWithSHA512,
-	}
 	key, err := genKeyPair()
 	if err != nil {
 		return
 	}
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
-	if err != nil {
-		return
+
+	now := time.Now().UTC().Add(time.Duration(-48) * time.Hour)
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(time.Now().UnixNano() * 1000),
+		Subject:               pkix.Name{Organization: []string{name}, CommonName: name},
+		NotBefore:             now,
+		NotAfter:              now.Add(caMaxAge),
+		SubjectKeyId:          bigIntHash(key.N),
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageEmailProtection, x509.ExtKeyUsageTimeStamping, x509.ExtKeyUsageMicrosoftCommercialCodeSigning, x509.ExtKeyUsageMicrosoftServerGatedCrypto, x509.ExtKeyUsageNetscapeServerGatedCrypto},
+		UnknownExtKeyUsage:    []asn1.ObjectIdentifier{asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 2, 1, 21}, asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 10, 3, 1}, asn1.ObjectIdentifier{1, 3, 6, 1, 4, 1, 311, 10, 3, 4}},
+		KeyUsage:              x509.KeyUsageCRLSign | x509.KeyUsageCertSign,
+		IsCA:                  true,
+		BasicConstraintsValid: true,
 	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
+	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
 	if err != nil {
 		return
 	}
@@ -96,8 +87,48 @@ func GenCA(name string) (certPEM, keyPEM []byte, err error) {
 		Bytes: certDER,
 	})
 	keyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "ECDSA PRIVATE KEY",
-		Bytes: keyDER,
+		Type:  "RSA PRIVATE KEY",
+		Bytes: x509.MarshalPKCS1PrivateKey(key),
 	})
 	return
+}
+
+// GenerateCert generates a leaf cert from ca.
+func GenerateCert(ca *tls.Certificate, hosts ...string) (*tls.Certificate, error) {
+	now := time.Now().UTC().Add(time.Duration(-48) * time.Hour)
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano() * 1000),
+		Subject:      pkix.Name{CommonName: hosts[0]},
+		NotBefore:    now,
+		NotAfter:     now.Add(leafMaxAge),
+	}
+
+	for _, h := range hosts {
+		if ip := net.ParseIP(h); ip != nil {
+			template.IPAddresses = append(template.IPAddresses, ip)
+		} else {
+			template.DNSNames = append(template.DNSNames, h)
+		}
+	}
+
+	key, err := genKeyPair()
+	if err != nil {
+		return nil, err
+	}
+	x, err := x509.CreateCertificate(rand.Reader, template, ca.Leaf, key.Public(), ca.PrivateKey)
+	if err != nil {
+		return nil, err
+	}
+	cert := new(tls.Certificate)
+	cert.Certificate = append(cert.Certificate, x)
+	cert.Certificate = append(cert.Certificate, x, ca.Leaf.Raw)
+	cert.PrivateKey = key
+	cert.Leaf, _ = x509.ParseCertificate(x)
+	return cert, nil
+}
+
+func bigIntHash(n *big.Int) []byte {
+	h := sha1.New()
+	h.Write(n.Bytes())
+	return h.Sum(nil)
 }
