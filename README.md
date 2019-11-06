@@ -4,14 +4,14 @@ It is heavily inspired by the mitmproxy project (https://mitmproxy.org/).
 
 **Install**
 
-	go get github.com/kr/mitm
+	go get github.com/maaydin/mitm
 
 **Docs**
 
-http://godoc.org/github.com/kr/mitm
+http://godoc.org/github.com/maaydin/mitm
 
 **Contributors**
 
 * Keith Rarick (@kr)
 * Blake Mizerany (@bmizerany)
-* Sponsored in part by Rainforest QA (http://rainforestqa.com)
+* Mehmet Ali Aydin (@maaydin)

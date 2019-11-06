@@ -7,7 +7,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"math/big"
@@ -63,41 +62,5 @@ func genCert(ca *tls.Certificate, names []string) (*tls.Certificate, error) {
 }
 
 func genKeyPair() (*ecdsa.PrivateKey, error) {
-	return ecdsa.GenerateKey(elliptic.P521(), rand.Reader)
-}
-
-func GenCA(name string) (certPEM, keyPEM []byte, err error) {
-	now := time.Now().UTC()
-	tmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: name},
-		NotBefore:             now,
-		NotAfter:              now.Add(caMaxAge),
-		KeyUsage:              caUsage,
-		BasicConstraintsValid: true,
-		IsCA:               true,
-		MaxPathLen:         2,
-		SignatureAlgorithm: x509.ECDSAWithSHA512,
-	}
-	key, err := genKeyPair()
-	if err != nil {
-		return
-	}
-	certDER, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, key.Public(), key)
-	if err != nil {
-		return
-	}
-	keyDER, err := x509.MarshalECPrivateKey(key)
-	if err != nil {
-		return
-	}
-	certPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "CERTIFICATE",
-		Bytes: certDER,
-	})
-	keyPEM = pem.EncodeToMemory(&pem.Block{
-		Type:  "ECDSA PRIVATE KEY",
-		Bytes: keyDER,
-	})
-	return
+	return ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 }

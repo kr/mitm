@@ -1,30 +1,26 @@
-// +build ignore
-
 package main
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
-	"io/ioutil"
 	"log"
 	"net/http"
 	"os"
 	"path"
-	"strings"
-
-	"github.com/kr/mitm"
+	"fmt"
+	"time"
+	"github.com/maaydin/mitm"
 )
 
 var (
-	hostname, _ = os.Hostname()
-
 	dir      = path.Join(os.Getenv("HOME"), ".mitm")
 	keyFile  = path.Join(dir, "ca-key.pem")
 	certFile = path.Join(dir, "ca-cert.pem")
+ 	uriPatterns []string
 )
 
 func main() {
+	uriPatterns = append(uriPatterns, "{}")
 	ca, err := loadCA()
 	if err != nil {
 		log.Fatal(err)
@@ -35,16 +31,31 @@ func main() {
 			MinVersion: tls.VersionTLS12,
 			//CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA},
 		},
-		Wrap: cloudToButt,
+		Analyze: analyze,
 	}
-	log.Fatal(http.ListenAndServe(":8080", p))
+	    //Creating sub-domain
+    app := http.NewServeMux()
+    app.HandleFunc("/api/report", report)
+
+    go func() {
+        log.Println("Server starting on: http://localhost:8080")
+        http.ListenAndServe(":8080", app)
+    }()
+	
+	log.Println("Proxy starting on: http://localhost:3128 https://localhost:3128")
+	http.ListenAndServe(":3128", p)
+        
+}
+
+func report(w http.ResponseWriter, r *http.Request) {
+    fmt.Fprintf(w, "Hello, %s! This is a variable in the main routine: %s", r.URL.Path[1:], dir)
 }
 
 func loadCA() (cert tls.Certificate, err error) {
 	// TODO(kr): check file permissions
 	cert, err = tls.LoadX509KeyPair(certFile, keyFile)
 	if os.IsNotExist(err) {
-		cert, err = genCA()
+		log.Fatal("CA Certificate not found on path: ", dir)
 	}
 	if err == nil {
 		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
@@ -52,60 +63,13 @@ func loadCA() (cert tls.Certificate, err error) {
 	return
 }
 
-func genCA() (cert tls.Certificate, err error) {
-	err = os.MkdirAll(dir, 0700)
-	if err != nil {
-		return
-	}
-	certPEM, keyPEM, err := mitm.GenCA(hostname)
-	if err != nil {
-		return
-	}
-	cert, _ = tls.X509KeyPair(certPEM, keyPEM)
-	err = ioutil.WriteFile(certFile, certPEM, 0400)
-	if err == nil {
-		err = ioutil.WriteFile(keyFile, keyPEM, 0400)
-	}
-	return cert, err
-}
-
-type cloudToButtResponse struct {
-	http.ResponseWriter
-
-	sub         bool
-	wroteHeader bool
-}
-
-func (w *cloudToButtResponse) WriteHeader(code int) {
-	if w.wroteHeader {
-		return
-	}
-	w.wroteHeader = true
-	ctype := w.Header().Get("Content-Type")
-	if strings.HasPrefix(ctype, "text/html") {
-		w.sub = true
-	}
-	w.ResponseWriter.WriteHeader(code)
-}
-
-var (
-	cloud = []byte("the cloud")
-	butt  = []byte("my   butt")
-)
-
-func (w *cloudToButtResponse) Write(p []byte) (int, error) {
-	if !w.wroteHeader {
-		w.WriteHeader(200)
-	}
-	if w.sub {
-		p = bytes.Replace(p, cloud, butt, -1)
-	}
-	return w.ResponseWriter.Write(p)
-}
-
-func cloudToButt(upstream http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		r.Header.Set("Accept-Encoding", "")
-		upstream.ServeHTTP(&cloudToButtResponse{ResponseWriter: w}, r)
-	})
+func analyze(rr mitm.RequestRecord) {
+	fmt.Printf("Method: %s\n", rr.Method)
+	fmt.Printf("Scheme: %s\n", rr.Scheme)
+	fmt.Printf("Host: %s\n", rr.Host)
+	fmt.Printf("Path: %s\n", rr.Path)
+	fmt.Printf("StatusCode: %d\n", rr.StatusCode)
+	fmt.Println("Start time: " + rr.StartTime.Format(time.RFC3339Nano))
+	fmt.Println("End time: " + rr.EndTime.Format(time.RFC3339Nano))
+	fmt.Printf("Elapsed Time: %dms\n", rr.ElapsedTime)
 }

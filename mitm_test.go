@@ -12,44 +12,34 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"path"
+	"errors"
 )
 
 var hostname, _ = os.Hostname()
 
 var (
-	nettest = flag.Bool("nettest", false, "run tests over network")
+	nettest  = flag.Bool("nettest", false, "run tests over network")
+	dir      = path.Join(os.Getenv("HOME"), ".rometer")
+	keyFile  = path.Join(dir, "ca-key.pem")
+	certFile = path.Join(dir, "ca-cert.pem")
 )
 
 func init() {
 	flag.Parse()
 }
 
-func genCA() (cert tls.Certificate, err error) {
-	certPEM, keyPEM, err := GenCA(hostname)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	cert, err = tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return tls.Certificate{}, err
-	}
-	cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
-	return cert, err
-}
-
-func testProxy(t *testing.T, ca *tls.Certificate, setupReq func(req *http.Request), wrap func(http.Handler) http.Handler, downstream http.HandlerFunc, checkResp func(*http.Response)) {
+func testProxy(t *testing.T, ca *tls.Certificate, setupReq func(req *http.Request), analyze func(RequestRecord), downstream http.HandlerFunc, checkResp func(*http.Response)) {
 	ds := httptest.NewTLSServer(downstream)
 	defer ds.Close()
 
 	p := &Proxy{
 		CA: ca,
-		TLSClientConfig: &tls.Config{
-			InsecureSkipVerify: true,
-		},
 		TLSServerConfig: &tls.Config{
 			MinVersion: tls.VersionTLS12,
+			//CipherSuites: []uint16{tls.TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA},
 		},
-		Wrap: wrap,
+		Analyze: analyze,
 	}
 
 	l, err := net.Listen("tcp", "localhost:0")
@@ -73,78 +63,60 @@ func testProxy(t *testing.T, ca *tls.Certificate, setupReq func(req *http.Reques
 	}
 	setupReq(req)
 
+	u, err := url.Parse("http://" + l.Addr().String())
+
 	c := &http.Client{
 		Transport: &http.Transport{
-			Proxy: func(r *http.Request) (*url.URL, error) {
-				u := *r.URL
-				u.Scheme = "https"
-				u.Host = l.Addr().String()
-				return &u, nil
-			},
+			Proxy: http.ProxyURL(u),
 			TLSClientConfig: &tls.Config{
 				InsecureSkipVerify: true,
 			},
 		},
 	}
+	t.Log(l.Addr().String())
 
 	resp, err := c.Do(req)
+
+	if resp == nil {
+		t.Log("Null response:")
+	}
 	if err != nil {
 		t.Fatal("Do:", err)
 	}
 	checkResp(resp)
 }
 
-func Test(t *testing.T) {
-	const xHops = "X-Hops"
-
-	ca, err := genCA()
-	if err != nil {
-		t.Fatal("loadCA:", err)
+func loadCA() (cert tls.Certificate, err error) {
+	// TODO(kr): check file permissions
+	cert, err = tls.LoadX509KeyPair(certFile, keyFile)
+	if os.IsNotExist(err) {
+		err = errors.New("CA Certificate not found on path: " + dir)
 	}
-
-	testProxy(t, &ca, func(req *http.Request) {
-		req.Header.Set(xHops, "a")
-	}, func(upstream http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			hops := r.Header.Get("X-Hops") + "b"
-			r.Header.Set("X-Hops", hops)
-			upstream.ServeHTTP(w, r)
-		})
-	}, func(w http.ResponseWriter, r *http.Request) {
-		hops := r.Header.Get(xHops) + "c"
-		w.Header().Set(xHops, hops)
-	}, func(resp *http.Response) {
-		const w = "abc"
-		if g := resp.Header.Get(xHops); g != w {
-			t.Errorf("want %s to be %s, got %s", xHops, w, g)
-		}
-	})
+	if err == nil {
+		cert.Leaf, err = x509.ParseCertificate(cert.Certificate[0])
+	}
+	return
 }
 
-func TestNet(t *testing.T) {
-	if !*nettest {
-		t.Skip()
-	}
 
-	ca, err := genCA()
+func TestAnalyzeMethodCalled(t *testing.T) {
+	//TODO Run test also on https when http.client bug fixed https://github.com/golang/go/issues/28012
+	ca, err := loadCA()
 	if err != nil {
-		t.Fatal("loadCA:", err)
+		t.Fatal(err)
 	}
 
-	var wrapped bool
+	var analyzed bool
 	testProxy(t, &ca, func(req *http.Request) {
-		nreq, _ := http.NewRequest("GET", "https://mitmtest.herokuapp.com/", nil)
+		nreq, _ := http.NewRequest("GET", "http://www.google.com/", nil)
 		*req = *nreq
-	}, func(upstream http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			wrapped = true
-			upstream.ServeHTTP(w, r)
-		})
+	}, func(rr RequestRecord) {
+		analyzed = true
 	}, func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("this shouldn't be hit")
 	}, func(resp *http.Response) {
-		if !wrapped {
-			t.Errorf("expected wrap")
+		if !analyzed {
+			t.Errorf("expected analysis")
 		}
 		got, err := ioutil.ReadAll(resp.Body)
 		if err != nil {
@@ -153,8 +125,8 @@ func TestNet(t *testing.T) {
 		if code := resp.StatusCode; code != 200 {
 			t.Errorf("want code 200, got %d", code)
 		}
-		if g := string(got); g != "ok\n" {
-			t.Errorf("want ok, got %q", g)
+		if g := string(got); !strings.Contains(g, "doctype") {
+			t.Errorf("want Google, got %q", g)
 		}
 	})
 }
